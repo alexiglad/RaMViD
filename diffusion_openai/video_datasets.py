@@ -38,7 +38,7 @@ def load_data(
         classes = [sorted_classes[x] for x in class_names]
     
     entry = all_files[0].split(".")[-1]
-    if entry in ["avi", "mp4"]:
+    if entry in ["avi", "mp4", "webm"]:
         dataset = VideoDataset_mp4(
             image_size,
             all_files,
@@ -75,7 +75,7 @@ def _list_video_files_recursively(data_dir):
     for entry in sorted(bf.listdir(data_dir)):
         full_path = bf.join(data_dir, entry)
         ext = entry.split(".")[-1]
-        if "." in entry and ext.lower() in ["gif", "avi", "mp4"]:
+        if "." in entry and ext.lower() in ["gif", "avi", "mp4", "webm"]:
             results.append(full_path)
         elif bf.isdir(full_path):
             results.extend(_list_video_files_recursively(full_path))
@@ -97,17 +97,28 @@ class VideoDataset_mp4(Dataset):
         path = self.local_videos[idx]
         arr_list = []
         video_container = av.open(path)
-        n = video_container.streams.video[0].frames
-        frames = [i for i in range(n)]
-        if n > self.seq_len:
-            start = np.random.randint(0, n-self.seq_len)
+        video_stream = video_container.streams.video[0]
+        frame_count = 0
+        frames = []
+
+        # Count frames and store them in a list
+        for frame in video_container.decode(video_stream):
+            frames.append(frame)
+            frame_count += 1
+
+        # print("frame_count", frame_count)
+        # print("frames", frames)
+
+        # Choose a random sequence if the video is longer than seq_len
+        if frame_count > self.seq_len:
+            start = np.random.randint(0, frame_count - self.seq_len)
             frames = frames[start:start + self.seq_len]
-        for id, frame_av in enumerate(video_container.decode(video=0)):
+
+        for frame_av in frames:
         # We are not on a new enough PIL to support the `reducing_gap`
         # argument, which uses BOX downsampling at powers of two first.
         # Thus, we do it by hand to improve downsample quality.
-            if (id not in frames):
-                continue
+                        
             frame = frame_av.to_image()
             while min(*frame.size) >= 2 * self.resolution:
                 frame = frame.resize(
@@ -129,7 +140,10 @@ class VideoDataset_mp4(Dataset):
             arr = arr.astype(np.float32) / 127.5 - 1
             arr_list.append(arr)
         arr_seq = np.array(arr_list)
-        arr_seq = np.transpose(arr_seq, [3, 0, 1, 2])
+        if arr_seq.ndim == 4:
+            arr_seq = np.transpose(arr_seq, [3, 0, 1, 2])  # transposing to [channels, frames, height, width]
+        else:
+            raise ValueError(f"Expected arr_seq to have 4 dimensions, got {arr_seq.ndim}")
         # fill in missing frames with 0s
         if arr_seq.shape[1] < self.seq_len:
             required_dim = self.seq_len - arr_seq.shape[1]

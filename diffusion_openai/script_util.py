@@ -106,6 +106,8 @@ def create_model(
 ):
     if image_size == 256:
         channel_mult = (1, 1, 2, 2, 4, 4)
+    elif image_size == 224: #TODO tune
+        channel_mult = (1, 1, 2, 2, 4)
     elif image_size == 128:
         channel_mult = (1, 2, 3, 4)
     elif image_size == 64:
@@ -221,6 +223,9 @@ def sr_create_model(
 
     if large_size == 256:
         channel_mult = (1, 1, 2, 2, 4, 4)
+    elif large_size == 224: #TODO tune
+        # Assuming a linear step between 128 and 256 size settings.
+        channel_mult = (1, 1, 2, 2, 4) 
     elif large_size == 64:
         channel_mult = (1, 2, 3, 4)
     else:
