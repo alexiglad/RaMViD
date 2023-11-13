@@ -94,7 +94,7 @@ def main():
             model,
             (args.batch_size, channels, args.seq_len, args.image_size, args.image_size),
             clip_denoised=args.clip_denoised,
-            progress=False,
+            progress=True,
             cond_kwargs=cond_kwargs
         )
 
@@ -127,23 +127,43 @@ def main():
 
     if dist.get_rank() == 0:
 
-        shape_str = "x".join([str(x) for x in arr.shape])
+        shape_str = "pred" + "x".join([str(x) for x in arr.shape])
         logger.log(f"saving samples to {os.path.join(logger.get_dir(), shape_str)}")
         np.savez(os.path.join(logger.get_dir(), shape_str), arr)
 
         if args.cond_generation and args.save_gt:
-            shape_str_gt = "x".join([str(x) for x in arr_gt.shape])
+            shape_str_gt = "gt" + "x".join([str(x) for x in arr_gt.shape])
             logger.log(f"saving ground_truth to {os.path.join(logger.get_dir(), shape_str_gt)}")
             np.savez(os.path.join(logger.get_dir(), shape_str_gt), arr_gt)
 
+        #TODO here call save_videos_as_frames
+
     dist.barrier()
     logger.log("sampling complete")
+
+#TODO call this also make sure to trim vids (by removing first 3 frames) to 16 frames
+def save_videos_as_frames(video_list, root_dir, start_index=0):
+    to_pil = ToPILImage()
+    
+    # Iterate over each video in the list
+    for video_idx, video in enumerate(video_list):
+        # Create a directory for the current video with a unique index
+        video_dir = os.path.join(root_dir, f'video_{start_index + video_idx}')
+        os.makedirs(video_dir, exist_ok=True)
+
+        # Iterate over each frame in the video
+        for frame_idx, frame in enumerate(video):
+            # Convert the frame to a PIL image
+            frame_img = to_pil(frame.cpu().detach())
+
+            # Save the frame image with the appropriate filename
+            frame_img.save(os.path.join(video_dir, f'frame_{frame_idx}.png'))
 
 
 def create_argparser():
     defaults = dict(
         clip_denoised=True,
-        num_samples=10,
+        num_samples=1, #TODO change code to produce whole ds of samples later
         batch_size=10,
         use_ddim=False,
         model_path="",
