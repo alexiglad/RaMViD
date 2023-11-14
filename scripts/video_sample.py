@@ -4,7 +4,10 @@ numpy array. This can be used to produce samples for FID evaluation.
 """
 
 import argparse
-
+import time
+from datetime import datetime
+from torchvision.transforms import ToPILImage
+import torch
 import numpy as np
 import torch as th
 import torch.distributed as dist
@@ -78,7 +81,16 @@ def main():
     logger.log("sampling...")
     all_videos = []
     all_gt = []
-    while len(all_videos) * args.batch_size < args.num_samples:
+
+    timestamp = int(time.time())
+    dt_object = datetime.fromtimestamp(timestamp)
+    dt_string = dt_object.strftime("%Y-%m-%d_%H-%M-%S")
+    num_generated_videos = 0
+    dataset_save_base_dir = "../generated_datasets/ramvid"
+    save_video_dir = f"{dataset_save_base_dir}/{dt_string}"
+    print("about to start while loop dist.get_rank()", dist.get_rank())
+    #TODO change code below to all gather and only do if is master process
+    while num_generated_videos < args.num_samples:
         
         if args.cond_generation:
             video, _ = next(data)
@@ -99,56 +111,71 @@ def main():
         )
 
         sample = ((sample + 1) * 127.5).clamp(0, 255).to(th.uint8)
-        sample = sample.permute(0, 2, 3, 4, 1)
+        sample = sample.permute(0, 2, 1, 3, 4) # also had to switch last two dims images were sideways
+        #after this is 10, 19, 224, 224, 3
+        #before it was 10, 3, 19, 224, 224
+        #so should do
+        # sample.permute(0, 2, 1, 4, 3 (w and h switched here see above)
         sample = sample.contiguous()
 
         gathered_samples = [th.zeros_like(sample) for _ in range(dist.get_world_size())]
         dist.all_gather(gathered_samples, sample)  # gather not supported with NCCL
-        all_videos.extend([sample.cpu().numpy() for sample in gathered_samples])
-        logger.log(f"created {len(all_videos) * args.batch_size} samples")
+        gathered_samples = torch.cat(gathered_samples, dim=0)
+        # all_videos.extend([sample.cpu().numpy() for sample in gathered_samples])
+        if dist.get_rank() == 0:
+            save_videos_as_frames(gathered_samples, save_video_dir, 'fake', num_generated_videos)
+        
 
         if args.cond_generation and args.save_gt:
 
             video = ((video + 1) * 127.5).clamp(0, 255).to(th.uint8)
-            video = video.permute(0, 2, 3, 4, 1)
+            video = video.permute(0, 2, 1, 3, 4)
             video = video.contiguous()
-
             gathered_videos = [th.zeros_like(video) for _ in range(dist.get_world_size())]
             dist.all_gather(gathered_videos, video)  # gather not supported with NCCL
-            all_gt.extend([video.cpu().numpy() for video in gathered_videos])
-            logger.log(f"created {len(all_gt) * args.batch_size} videos")
+            gathered_videos = torch.cat(gathered_videos, dim=0)
+            # all_gt.extend([video.cpu().numpy() for video in gathered_videos])
+            # logger.log(f"created {len(all_gt) * args.batch_size} videos")
+            if dist.get_rank() == 0:
+                save_videos_as_frames(gathered_videos, save_video_dir, 'real', num_generated_videos)
+            
 
 
-    arr = np.concatenate(all_videos, axis=0)
-
-    if args.cond_generation and args.save_gt:
-        arr_gt = np.concatenate(all_gt, axis=0)
+        num_generated_videos += len(sample) * dist.get_world_size()
+        logger.log(f"created {num_generated_videos} samples so far")
 
 
-    if dist.get_rank() == 0:
+    # arr = np.concatenate(all_videos, axis=0)
 
-        shape_str = "pred" + "x".join([str(x) for x in arr.shape])
-        logger.log(f"saving samples to {os.path.join(logger.get_dir(), shape_str)}")
-        np.savez(os.path.join(logger.get_dir(), shape_str), arr)
+    # if args.cond_generation and args.save_gt:
+    #     arr_gt = np.concatenate(all_gt, axis=0)
+    # NOTE commented out all this code as saving all vids in online manner
 
-        if args.cond_generation and args.save_gt:
-            shape_str_gt = "gt" + "x".join([str(x) for x in arr_gt.shape])
-            logger.log(f"saving ground_truth to {os.path.join(logger.get_dir(), shape_str_gt)}")
-            np.savez(os.path.join(logger.get_dir(), shape_str_gt), arr_gt)
+    # if dist.get_rank() == 0:
 
-        #TODO here call save_videos_as_frames
+    #     shape_str = "pred" + "x".join([str(x) for x in arr.shape])
+    #     logger.log(f"saving samples to {os.path.join(logger.get_dir(), shape_str)}")
+    #     np.savez(os.path.join(logger.get_dir(), shape_str), arr)
+
+    #     if args.cond_generation and args.save_gt:
+    #         shape_str_gt = "gt" + "x".join([str(x) for x in arr_gt.shape])
+    #         logger.log(f"saving ground_truth to {os.path.join(logger.get_dir(), shape_str_gt)}")
+    #         np.savez(os.path.join(logger.get_dir(), shape_str_gt), arr_gt)
+
 
     dist.barrier()
     logger.log("sampling complete")
 
-#TODO call this also make sure to trim vids (by removing first 3 frames) to 16 frames
-def save_videos_as_frames(video_list, root_dir, start_index=0):
+def save_videos_as_frames(video_list, root_dir, subfolder, start_index=0):
+    video_list = video_list[:, 3:]#condition on first 3 frames so dont use
     to_pil = ToPILImage()
+    subfolder_path = os.path.join(root_dir, subfolder)
+    os.makedirs(subfolder_path, exist_ok=True)
     
     # Iterate over each video in the list
     for video_idx, video in enumerate(video_list):
         # Create a directory for the current video with a unique index
-        video_dir = os.path.join(root_dir, f'video_{start_index + video_idx}')
+        video_dir = os.path.join(subfolder_path, f'video_{start_index + video_idx}')
         os.makedirs(video_dir, exist_ok=True)
 
         # Iterate over each frame in the video
